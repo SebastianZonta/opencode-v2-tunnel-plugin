@@ -1,11 +1,37 @@
 import { type Plugin, tool } from "@opencode-ai/plugin";
-import { BASE_PORT, createId, HubCore } from "../../src/hub";
+import {
+  BASE_PORT,
+  createId,
+  HubCore,
+  isNotice,
+  type Envelope,
+} from "../../src/hub";
 
 // One hub per opencode process. Replies arrive in ticket 04;
 // this file stays a thin adapter over HubCore (tested in src/).
 const hub = new HubCore(createId(), "hub");
 
-export const HubPlugin: Plugin = async () => {
+const displayName = (id: string): string =>
+  id === hub.id
+    ? `${hub.name} (you)`
+    : (hub.peers().find((p) => p.id === id)?.name ?? id.slice(0, 8));
+
+export const HubPlugin: Plugin = async (input) => {
+  // Arrival UX (spec section 5): toast on every queued incoming message.
+  // Fire-and-forget: a failed toast must never break receipt.
+  hub.onMessage = (m) => {
+    const name =
+      hub.peers().find((p) => p.id === m.from)?.name ?? "unknown peer";
+    void Promise.resolve(
+      input.client.tui.showToast({
+        body: {
+          title: `hub: message from ${name}`,
+          message: m.text.slice(0, 200),
+          variant: "info",
+        },
+      }),
+    ).catch(() => {});
+  };
   return {
     tool: {
       hub_start: tool({
@@ -31,33 +57,51 @@ export const HubPlugin: Plugin = async () => {
 
       hub_send: tool({
         description:
-          "Send a text message to a hub listener URL (ticket 01: loopback only).",
+          "Send a text message to a peer by number or name (see hub_peers); ambiguous names are refused.",
         args: {
-          url: tool.schema.string(),
-          to: tool.schema.string(),
+          peer: tool.schema.string(),
           text: tool.schema.string(),
         },
         async execute(args) {
-          const result = await hub.send(args.url, {
-            id: createId(),
-            from: hub.id,
-            to: args.to,
-            type: "request",
-            text: args.text,
-            ts: new Date().toISOString(),
-          });
-          return result.status;
+          try {
+            const result = await hub.sendToPeer(args.peer, args.text);
+            return result.status;
+          } catch (e) {
+            return e instanceof Error ? e.message : String(e);
+          }
+        },
+      }),
+
+      hub_reply: tool({
+        description:
+          "Answer inbox item n (see hub_inbox); the reply fills inReplyTo invisibly.",
+        args: {
+          n: tool.schema.number(),
+          text: tool.schema.string(),
+        },
+        async execute(args) {
+          try {
+            const result = await hub.reply(args.n, args.text);
+            return result.status;
+          } catch (e) {
+            return e instanceof Error ? e.message : String(e);
+          }
         },
       }),
 
       hub_inbox: tool({
-        description: "List messages this hub has received.",
+        description:
+          "Numbered inbox: requests, responses, and system notices. Answer items with hub_reply <n>.",
         args: {},
         async execute() {
           const items = hub.inbox();
           if (items.length === 0) return "(inbox empty)";
           return items
-            .map((m, i) => `${i + 1}. [${m.type}] ${m.from}: ${m.text}`)
+            .map((m, i) =>
+              isNotice(m)
+                ? `${i + 1}. (notice) ${m.text}`
+                : `${i + 1}. [${m.type}] ${displayName(m.from)}: ${m.text}`,
+            )
             .join("\n");
         },
       }),

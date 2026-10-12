@@ -103,7 +103,7 @@ describe("POST /v1/messages", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "queued" });
     expect(hub.inbox()).toHaveLength(1);
-    expect(hub.inbox()[0].inReplyTo).toBe("m1");
+    expect((hub.inbox()[0] as Envelope).inReplyTo).toBe("m1");
   });
 });
 

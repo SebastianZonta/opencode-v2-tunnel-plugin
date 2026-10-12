@@ -4,9 +4,9 @@
 
 **Blocked by:** 03 (pairing and gated inbox).
 
-**Status:** ready-for-agent
+**Status:** done (commit feat(hub): replies, number-or-name addressing, timeout notices)
 
-- [ ] `hub_reply <n> <text>` answers inbox item n with `inReplyTo` filled invisibly; uuids never in UX
-- [ ] `hub peers` numbers peers; `hub_send` accepts number or name-alias; ambiguous names refused, never guessed
-- [ ] Incoming message fires `tui.toast.show`; inbox shows requests, responses, system notices numbered
-- [ ] Unanswered requests expire locally with a timeout error (no infinite retry)
+- [x] `hub_reply <n> <text>` answers inbox item n with `inReplyTo` filled invisibly; uuids never in UX
+- [x] `hub peers` numbers peers; `hub_send` accepts number or name-alias; ambiguous names refused, never guessed
+- [x] Incoming message fires `tui.toast.show`; inbox shows requests, responses, system notices numbered
+- [x] Unanswered requests expire locally with a timeout error (no infinite retry)

@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import Bonjour from "bonjour-service";
-import { PeerRegistry, type PeerInfo } from "./peers";
+import { PeerRegistry, type PeerAnnouncement, type PeerInfo } from "./peers";
 
 export const MAX_TEXT_BYTES = 64 * 1024;
 export const BASE_PORT = 41737;
@@ -33,6 +33,11 @@ export interface HubOptions {
   // Tests pass a temp file.
   peersPath?: string;
   now?: () => number;
+  // Local expiry for unanswered requests; default 60 s. Tests inject less.
+  requestTimeoutMs?: number;
+  // Fired for each queued incoming message; the adapter wires it to
+  // client.tui.showToast (ticket 04 arrival UX).
+  onMessage?: (m: Envelope) => void;
 }
 
 export interface Envelope {
@@ -43,6 +48,24 @@ export interface Envelope {
   inReplyTo?: string;
   text: string;
   ts: string; // ISO-8601, per spec section 3
+}
+
+// Local system notice (e.g. request timeout). Lives in the inbox list so
+// numbering matches hub_reply <n>; never sent on the wire.
+export interface Notice {
+  kind: "notice";
+  text: string;
+  ts: string; // ISO-8601
+}
+
+export function isNotice(v: unknown): v is Notice {
+  if (typeof v !== "object" || v === null) return false;
+  const n = v as Record<string, unknown>;
+  return (
+    n.kind === "notice" &&
+    typeof n.text === "string" &&
+    typeof n.ts === "string"
+  );
 }
 
 export const createId = () => randomUUID();
@@ -88,14 +111,18 @@ export interface Peer extends PeerInfo {
 
 export class HubCore {
   private server: Server | null = null;
-  private received: Envelope[] = [];
+  private received: Array<Envelope | Notice> = [];
   private bonjour: Bonjour | null = null;
   private browser: Bonjour.Browser | null = null;
   private registry: PeerRegistry;
   private paired = new Map<string, PairedPeer>();
   private pendingCodes = new Map<string, number>(); // code -> issuedAt ms
+  // Own outgoing requests awaiting a response: id -> {peer, sentAt ms}.
+  private pending = new Map<string, { to: string; name: string; sentAt: number }>();
   private readonly peersPath: string;
   private readonly now: () => number;
+  private readonly requestTimeoutMs: number;
+  onMessage: ((m: Envelope) => void) | null = null;
   advertisedName = "";
   port = 0;
 
@@ -107,6 +134,8 @@ export class HubCore {
     this.registry = new PeerRegistry(opts.peerTimeoutMs);
     this.peersPath = opts.peersPath ?? defaultPeersPath();
     this.now = opts.now ?? Date.now;
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? 60_000;
+    this.onMessage = opts.onMessage ?? null;
     this.loadPeers();
   }
 
@@ -158,7 +187,8 @@ export class HubCore {
     this.registry.clear();
   }
 
-  inbox(): Envelope[] {
+  inbox(): Array<Envelope | Notice> {
+    this.sweepExpired();
     return [...this.received];
   }
 
@@ -168,6 +198,97 @@ export class HubCore {
 
   isPaired(peerId: string): boolean {
     return peerId === this.id || this.paired.has(peerId);
+  }
+
+  // Manual presence entry (ticket 05's `hub add` will reuse this seam).
+  addPeer(a: PeerAnnouncement): void {
+    this.registry.upsert(a);
+  }
+
+  // Number (1-based into peers()) or exact display name. Ambiguous names
+  // throw — never guessed (spec section 5).
+  resolvePeer(ref: string): Peer {
+    const list = this.peers();
+    if (/^\d+$/.test(ref)) {
+      const peer = list[Number(ref) - 1];
+      if (!peer) throw new Error(`hub: no peer #${ref}`);
+      return peer;
+    }
+    const hits = list.filter((p) => p.name === ref);
+    if (hits.length > 1)
+      throw new Error(`hub: ambiguous peer name "${ref}" — use its number`);
+    if (hits.length === 0) throw new Error(`hub: unknown peer "${ref}"`);
+    return hits[0];
+  }
+
+  async sendToPeer(
+    ref: string,
+    text: string,
+    type: "request" | "response" | "error" = "request",
+    inReplyTo?: string,
+  ): Promise<{ status: string }> {
+    const peer = this.resolvePeer(ref);
+    if (!this.isPaired(peer.id))
+      throw new Error(`hub: ${peer.name} is not paired — pair first`);
+    const env: Envelope = {
+      id: createId(),
+      from: this.id,
+      to: peer.id,
+      type,
+      ...(inReplyTo !== undefined ? { inReplyTo } : {}),
+      text,
+      ts: new Date(this.now()).toISOString(),
+    };
+    const result = await this.send(peerUrl(peer), env);
+    if (type === "request")
+      this.pending.set(env.id, { to: peer.id, name: peer.name, sentAt: this.now() });
+    return result;
+  }
+
+  // Answer inbox item n (1-based, same numbering hub_inbox shows).
+  // The reply fills inReplyTo invisibly; uuids stay out of the UX.
+  async reply(n: number, text: string): Promise<{ status: string }> {
+    const item = this.inbox()[n - 1];
+    if (!item) throw new Error(`hub: no inbox item #${n}`);
+    if (isNotice(item)) throw new Error("hub: cannot reply to a system notice");
+    const target =
+      item.from === this.id
+        ? {
+            id: this.id,
+            name: this.name,
+            port: this.port,
+            addresses: ["127.0.0.1"],
+          }
+        : this.peers().find((p) => p.id === item.from);
+    if (!target) throw new Error("hub: sender left or is unknown — cannot reply");
+    if (!this.isPaired(target.id))
+      throw new Error("hub: sender is not paired — pair first");
+    if (target.port === 0) throw new Error("hub: not started");
+    return this.send(peerUrl(target), {
+      id: createId(),
+      from: this.id,
+      to: target.id,
+      type: "response",
+      inReplyTo: item.id,
+      text,
+      ts: new Date(this.now()).toISOString(),
+    });
+  }
+
+  // Unanswered requests expire locally into a notice. No retry, no second
+  // notice (spec section 3). Lazy: runs on inbox()/reply().
+  private sweepExpired(): void {
+    const now = this.now();
+    for (const [id, p] of this.pending) {
+      if (now - p.sentAt > this.requestTimeoutMs) {
+        this.pending.delete(id);
+        this.received.push({
+          kind: "notice",
+          text: `request to ${p.name} timed out after ${Math.round(this.requestTimeoutMs / 1000)}s — no reply, not retried`,
+          ts: new Date(now).toISOString(),
+        });
+      }
+    }
   }
 
   issuePairingCode(): string {
@@ -339,8 +460,26 @@ export class HubCore {
       return;
     }
     this.received.push(v);
+    if (v.type !== "request" && v.inReplyTo) this.pending.delete(v.inReplyTo);
+    try {
+      this.onMessage?.(v);
+    } catch {
+      // Arrival notification must never break receipt.
+    }
     json(res, 200, { status: "queued" });
   }
+}
+
+// Prefer a LAN-reachable IPv4; loopback last, IPv6 bracketed.
+export function peerUrl(peer: { port: number; addresses: string[] }): string {
+  const v4 = peer.addresses.filter(
+    (a) => a.includes(".") && !a.startsWith("127.") && !a.startsWith("169.254."),
+  );
+  const addr =
+    v4[0] ?? peer.addresses.find((a) => a !== "::1") ??
+    peer.addresses[0] ?? "127.0.0.1";
+  const host = addr.includes(":") && !addr.startsWith("[") ? `[${addr}]` : addr;
+  return `http://${host}:${peer.port}/v1/messages`;
 }
 
 const defaultPeersPath = () =>
