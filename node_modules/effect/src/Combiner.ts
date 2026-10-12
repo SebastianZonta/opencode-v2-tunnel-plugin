@@ -24,15 +24,14 @@ import type * as Order from "./Order.ts"
  * `Struct.makeCombiner` or `Option.makeCombinerFailFast`, or define the
  * combining step for a `Reducer`.
  *
- * **Example** (number addition combiner)
+ * **Example** (Combining numbers with addition)
  *
- * ```ts
+ * ```ts import.meta.vitest
  * import { Combiner } from "effect"
  *
  * const Sum = Combiner.make<number>((self, that) => self + that)
  *
- * console.log(Sum.combine(3, 4))
- * // Output: 7
+ * Sum.combine(3, 4) // => 7
  * ```
  *
  * @see {@link make} – create a `Combiner` from a function
@@ -63,15 +62,14 @@ export interface Combiner<A> {
  * The returned combiner's `combine` method delegates to the provided function.
  * Any purity, associativity, or mutation behavior comes from that function.
  *
- * **Example** (multiplying numbers)
+ * **Example** (Multiplying numbers)
  *
- * ```ts
+ * ```ts import.meta.vitest
  * import { Combiner } from "effect"
  *
  * const Product = Combiner.make<number>((self, that) => self * that)
  *
- * console.log(Product.combine(3, 5))
- * // Output: 15
+ * Product.combine(3, 5) // => 15
  * ```
  *
  * @see {@link Combiner} – the interface this creates
@@ -95,15 +93,14 @@ export function make<A>(combine: (self: A, that: A) => A): Combiner<A> {
  * Returns a new `Combiner` where `combine(self, that)` calls the original
  * combiner as `combine(that, self)`.
  *
- * **Example** (reversing string concatenation)
+ * **Example** (Reversing string concatenation)
  *
- * ```ts
+ * ```ts import.meta.vitest
  * import { Combiner, String } from "effect"
  *
  * const Prepend = Combiner.flip(String.ReducerConcat)
  *
- * console.log(Prepend.combine("a", "b"))
- * // Output: "ba"
+ * Prepend.combine("a", "b") // => "ba"
  * ```
  *
  * @see {@link make}
@@ -128,18 +125,15 @@ export function flip<A>(combiner: Combiner<A>): Combiner<A> {
  * The combiner compares values using the given `Order`. When values are equal,
  * it returns `that` (the second argument).
  *
- * **Example** (minimum of two numbers)
+ * **Example** (Selecting the minimum of two numbers)
  *
- * ```ts
+ * ```ts import.meta.vitest
  * import { Combiner, Number } from "effect"
  *
  * const Min = Combiner.min(Number.Order)
  *
- * console.log(Min.combine(3, 1))
- * // Output: 1
- *
- * console.log(Min.combine(1, 3))
- * // Output: 1
+ * Min.combine(3, 1) // => 1
+ * Min.combine(1, 3) // => 1
  * ```
  *
  * @see {@link max}
@@ -164,18 +158,15 @@ export function min<A>(order: Order.Order<A>): Combiner<A> {
  * The combiner compares values using the given `Order`. When values are equal,
  * it returns `that` (the second argument).
  *
- * **Example** (maximum of two numbers)
+ * **Example** (Selecting the maximum of two numbers)
  *
- * ```ts
+ * ```ts import.meta.vitest
  * import { Combiner, Number } from "effect"
  *
  * const Max = Combiner.max(Number.Order)
  *
- * console.log(Max.combine(3, 1))
- * // Output: 3
- *
- * console.log(Max.combine(1, 3))
- * // Output: 3
+ * Max.combine(3, 1) // => 3
+ * Max.combine(1, 3) // => 3
  * ```
  *
  * @see {@link min}
@@ -197,15 +188,14 @@ export function max<A>(order: Order.Order<A>): Combiner<A> {
  *
  * `combine(self, that)` returns `self` and ignores `that`.
  *
- * **Example** (keeping the first value)
+ * **Example** (Keeping the first value)
  *
- * ```ts
+ * ```ts import.meta.vitest
  * import { Combiner } from "effect"
  *
  * const First = Combiner.first<number>()
  *
- * console.log(First.combine(1, 2))
- * // Output: 1
+ * First.combine(1, 2) // => 1
  * ```
  *
  * @see {@link last}
@@ -227,15 +217,14 @@ export function first<A>(): Combiner<A> {
  *
  * `combine(self, that)` returns `that` and ignores `self`.
  *
- * **Example** (keeping the last value)
+ * **Example** (Keeping the last value)
  *
- * ```ts
+ * ```ts import.meta.vitest
  * import { Combiner } from "effect"
  *
  * const Last = Combiner.last<number>()
  *
- * console.log(Last.combine(1, 2))
- * // Output: 2
+ * Last.combine(1, 2) // => 2
  * ```
  *
  * @see {@link first}
@@ -259,15 +248,14 @@ export function last<A>(): Combiner<A> {
  *
  * `combine(self, that)` returns the constant `a` and ignores both arguments.
  *
- * **Example** (always returning zero)
+ * **Example** (Always returning zero)
  *
- * ```ts
+ * ```ts import.meta.vitest
  * import { Combiner } from "effect"
  *
  * const Zero = Combiner.constant(0)
  *
- * console.log(Zero.combine(42, 99))
- * // Output: 0
+ * Zero.combine(42, 99) // => 0
  * ```
  *
  * @see {@link first}
@@ -295,15 +283,14 @@ export function constant<A>(a: A): Combiner<A> {
  * `combiner.combine(self, combiner.combine(middle, that))`. This function is
  * curried: first provide the separator, then the base combiner.
  *
- * **Example** (joining strings with a separator)
+ * **Example** (Joining strings with a separator)
  *
- * ```ts
+ * ```ts import.meta.vitest
  * import { Combiner, String } from "effect"
  *
  * const commaSep = Combiner.intercalate(",")(String.ReducerConcat)
  *
- * console.log(commaSep.combine("a", "b"))
- * // Output: "a,b"
+ * commaSep.combine("a", "b") // => "a,b"
  * ```
  *
  * @see {@link make}

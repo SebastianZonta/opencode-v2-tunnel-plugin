@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { HubCore, isNotice, type Envelope } from "./hub";
-import { HubPlugin } from "../.opencode/plugins/hub";
+import HubPlugin from "../.opencode/plugins/hub";
 
 // The adapter's hub uses the real TOFU path (no injection seam, by design:
 // ticket 03 dropped the env fallback as unspecced). Tests that drive it
@@ -176,29 +176,37 @@ describe("e2e: transcript loop, two instances one machine", () => {
   }, 60_000);
 });
 
-describe("e2e: arrival toast through the real plugin adapter", () => {
-  test("incoming message fires showToast with peer name and text", async () => {
+describe("e2e: arrival event through the real v2 plugin adapter", () => {
+  test("incoming message emits RPC event with peer name and text", async () => {
     const snap = snapshotRealPeers();
     try {
-      const toasts: Array<{ title: string; message: string }> = [];
-      const plugin = await HubPlugin({
-        client: {
-          tui: {
-            showToast: async (args: {
-              body: { title: string; message: string };
-            }) => {
-              toasts.push(args.body);
-              return {};
+      const emitted: Array<{ name: string; data: unknown }> = [];
+      type ToolDef = {
+        name: string;
+        execute: (a: unknown, c: unknown) => Promise<{ content: string }>;
+      };
+      const tools: Record<string, ToolDef> = {};
+      // Minimal stub of the v2 plugin context: capture tool registrations
+      // and RPC emissions, run everything else for real.
+      await HubPlugin.setup({
+        rpc: {
+          register: async () => ({
+            events: {
+              emit: async (name: string, data: unknown) => {
+                emitted.push({ name, data });
+              },
             },
+          }),
+        },
+        tool: {
+          transform: async (cb: (editor: { add: (t: ToolDef) => void }) => void) => {
+            cb({ add: (t) => { tools[t.name] = t; } });
           },
         },
       } as never);
-      const t = plugin.tool as unknown as Record<
-        string,
-        { execute: (a: unknown, c: unknown) => Promise<string> }
-      >;
-      const run = (name: string, args: unknown) => t[name].execute(args, {});
-  
+      const run = async (name: string, args: unknown) =>
+        (await tools[name].execute(args, {})).content;
+
       // A second hub plays the peer: real HTTP, real pairing, real POST.
       const started = await run("hub_start", { port: 41795 });
       const aid = started.match(/\(([^)]+)\)/)?.[1] ?? "";
@@ -219,17 +227,23 @@ describe("e2e: arrival toast through the real plugin adapter", () => {
       ).toMatch(/paired with/);
       peer.redeemPairingCode(peer.issuePairingCode(), aid, "hub");
       peer.addPeer({ id: aid, name: "hub", port: 41795, addresses: ["127.0.0.1"] });
-  
-      expect(toasts).toHaveLength(0);
+
+      expect(emitted).toHaveLength(0);
       expect(await peer.sendToPeer("hub", "hello toast")).toEqual({
         status: "queued",
       });
-      await new Promise((r) => setTimeout(r, 300)); // toast is fire-and-forget
-      expect(toasts).toHaveLength(1);
-      expect(toasts[0].title).toBe("hub: message from e2e-toast-bruno");
-      expect(toasts[0].message).toBe("hello toast");
-      step("arrival toast fires with peer name and text");
-  
+      await new Promise((r) => setTimeout(r, 300)); // emit is fire-and-forget
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0].name).toBe("message");
+      const data = emitted[0].data as { from: string; name: string; text: string };
+      expect(data.name).toBe("e2e-toast-bruno");
+      expect(data.text).toBe("hello toast");
+      step("arrival RPC event fires with peer name and text");
+      // The CLI companion renders exactly this event as its toast.
+      expect(`hub: message from ${data.name}`).toBe(
+        "hub: message from e2e-toast-bruno",
+      );
+
       await run("hub_stop", {});
       await peer.stop();
     } finally {
