@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 (skeleton plugin with loopback messaging).
 
-**Status:** ready-for-agent
+**Status:** done (22/22 bun tests incl. 7 pairing, tsc clean; merged from subagent copy, commit 4dd5301)
 
 - [ ] `hub_pair <peer>` issues code (6-digit, 5-min, single-use); `hub_pair <code>` redeems
 - [ ] Pre-pairing, only name + id visible; `POST /v1/messages` from unpaired id → 403
