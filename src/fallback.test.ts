@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { HubCore } from "./hub";
@@ -157,5 +157,49 @@ describe("hub fallback (two hubs over loopback)", () => {
     await expect(b.addPeerFromAddress("127.0.0.1", 41999)).rejects.toThrow(
       /cannot reach/,
     );
+  });
+});
+
+// Restart reconnect: presence is live-only, so the address a paired peer was
+// last seen at is stored with the pairing and re-probed on the next start.
+describe("restart reconnect", () => {
+  test("pairing remembers where the peer was seen", async () => {
+    const path = tmpPeers();
+    const b = trackHub(new HubCore("fb", "FB", { peersPath: tmpPeers() }));
+    const portB = await b.start(41791);
+    const a = trackHub(new HubCore("fa", "FA", { peersPath: path }));
+    await a.start(41792);
+    await a.addPeerFromAddress("127.0.0.1", portB);
+    a.redeemPairingCode(a.issuePairingCode(), "fb", "FB");
+
+    const store = JSON.parse(readFileSync(path, "utf8")) as Array<
+      Record<string, unknown>
+    >;
+    expect(store).toContainEqual(
+      expect.objectContaining({
+        id: "fb",
+        port: portB,
+        addresses: ["127.0.0.1"],
+      }),
+    );
+  });
+
+  test("a restarted hub re-probes the remembered address (no discovery)", async () => {
+    const path = tmpPeers();
+    const b = trackHub(new HubCore("fb", "FB", { peersPath: tmpPeers() }));
+    const portB = await b.start(41793);
+    const a1 = new HubCore("fa", "FA", { peersPath: path });
+    await a1.start(41794);
+    await a1.addPeerFromAddress("127.0.0.1", portB);
+    a1.redeemPairingCode(a1.issuePairingCode(), "fb", "FB");
+    await a1.stop();
+
+    // Never started: no mDNS, no beacons — only the remembered address.
+    const a2 = trackHub(new HubCore("fa", "FA", { peersPath: path }));
+    await a2.reconnect();
+    const peer = a2.peers().find((p) => p.id === "fb");
+    expect(peer?.paired).toBe(true);
+    expect(peer?.addresses).toEqual(["127.0.0.1"]);
+    expect(peer?.port).toBe(portB);
   });
 });

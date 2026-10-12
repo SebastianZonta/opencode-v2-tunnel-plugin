@@ -26,6 +26,10 @@ export interface PairedPeer {
   id: string;
   name: string;
   pairedAt: string; // ISO-8601
+  // Where the peer was last seen. Presence is live-only, so this is what a
+  // restarted hub re-probes instead of waiting for multicast it may never get.
+  port?: number;
+  addresses?: string[];
 }
 
 export interface HubOptions {
@@ -173,6 +177,9 @@ export class HubCore {
         this.server = server;
         this.port = p;
         await this.startDiscovery();
+        // Not awaited: a dead peer's probe timeout must not delay the
+        // listener becoming visible.
+        void this.reconnect().catch(() => {});
         return p;
       }
     }
@@ -249,15 +256,46 @@ export class HubCore {
       rec?.v !== PROTO_VERSION
     )
       throw new Error(`hub: ${host}:${port} is not a hub (bad /v1/info)`);
-    this.registry.upsert({
-      id: rec.id,
-      name: rec.name,
-      port,
-      addresses: [clean],
-    });
+    this.learn({ id: rec.id, name: rec.name, port, addresses: [clean] });
     const found = this.peers().find((p) => p.id === rec.id);
     if (!found) throw new Error("hub: manual entry vanished");
     return found;
+  }
+
+  // Presence is live-only, so a paired peer's address is kept in the TOFU
+  // record too: that is what reconnect() re-probes after a restart.
+  private learn(a: PeerAnnouncement): void {
+    this.registry.upsert(a);
+    const rec = this.paired.get(a.id);
+    if (!rec) return;
+    const addresses = a.addresses ?? [];
+    const key = (list?: string[]) => [...(list ?? [])].sort().join(",");
+    const same = rec.port === a.port && key(rec.addresses) === key(addresses);
+    if (same) return; // heartbeats every few seconds must not rewrite the file
+    this.paired.set(a.id, { ...rec, port: a.port, addresses });
+    this.savePeers();
+  }
+
+  // Restart path: paired peers are re-probed at their last known address, so
+  // presence comes back on networks where mDNS and beacons are both filtered.
+  // Best-effort — an unreachable peer simply stays absent.
+  async reconnect(): Promise<void> {
+    const targets = [...this.paired.values()].filter(
+      (p) => p.port !== undefined && (p.addresses?.length ?? 0) > 0,
+    );
+    await Promise.all(
+      targets.map(async (p) => {
+        const port = p.port as number;
+        for (const host of p.addresses ?? []) {
+          try {
+            await this.addPeerFromAddress(host, port);
+            return;
+          } catch {
+            // next remembered address, or wait for discovery
+          }
+        }
+      }),
+    );
   }
 
   // Number (1-based into peers()), exact display name, or instance id.
@@ -363,10 +401,12 @@ export class HubCore {
     if (issuedAt === undefined) throw new Error("hub: unknown pairing code");
     if (this.now() - issuedAt > PAIRING_CODE_TTL_MS)
       throw new Error("hub: pairing code expired");
+    const seen = this.registry.list().find((p) => p.id === peerId);
     const peer: PairedPeer = {
       id: peerId,
       name: peerName,
       pairedAt: new Date(this.now()).toISOString(),
+      ...(seen ? { port: seen.port, addresses: seen.addresses } : {}),
     };
     this.paired.set(peerId, peer);
     this.savePeers();
@@ -404,6 +444,14 @@ export class HubCore {
               typeof rec.pairedAt === "string"
                 ? rec.pairedAt
                 : new Date(0).toISOString(),
+            ...(typeof rec.port === "number" ? { port: rec.port } : {}),
+            ...(Array.isArray(rec.addresses)
+              ? {
+                  addresses: (rec.addresses as unknown[]).filter(
+                    (a): a is string => typeof a === "string",
+                  ),
+                }
+              : {}),
           });
         }
       }
@@ -444,7 +492,7 @@ export class HubCore {
       () => ({ v: PROTO_VERSION, id: this.id, name: this.name, port: this.port }),
       (p) => {
         if (p.v !== PROTO_VERSION || p.id === this.id) return;
-        this.registry.upsert({
+        this.learn({
           id: p.id,
           name: p.name,
           port: p.port,
@@ -496,7 +544,7 @@ export class HubCore {
       const id = svc.txt?.id;
       if (typeof id !== "string" || id === this.id) return;
       const name = typeof svc.txt?.name === "string" ? svc.txt.name : svc.name;
-      this.registry.upsert({
+      this.learn({
         id,
         name,
         port: svc.port,

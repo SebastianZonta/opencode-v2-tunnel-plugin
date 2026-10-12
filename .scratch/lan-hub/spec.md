@@ -53,9 +53,12 @@ Either machine may vanish at any time; presence is timeout-based throughout.
 - **Pre-pairing:** display name + instance id visible (mDNS already broadcasts
   them). `POST /v1/messages` from an unpaired id → HTTP `403`. No content flows
   before pairing.
-- **Memory (TOFU):** paired ids persist in `~/.config/opencode/hub-peers.json`
-  (`{id, name, pairedAt}`). Known ids skip pairing; unknown/changed ids re-pair;
-  `hub unpair <peer>` forgets.
+- **Memory (TOFU):** the instance id persists in
+  `~/.config/opencode/hub-id.json`; paired ids persist in
+  `~/.config/opencode/hub-peers.json` (`{id, name, pairedAt, port, addresses}`).
+  Known ids skip pairing; unknown/changed ids re-pair; `hub unpair <peer>` forgets.
+  A start re-probes each paired peer's last seen address, so a restart reconnects
+  even where mDNS and beacons are both filtered.
 - **Encryption:** **none in v1 — plaintext HTTP on the LAN, gated by pairing.**
   ⚠️ Hostile WiFi (café, hotel) can be sniffed: users must treat v1 as
   postcard-grade privacy. Encryption is the first post-v1 item.

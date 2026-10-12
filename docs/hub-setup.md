@@ -48,6 +48,14 @@ probes that address for a hub and adds it under its real identity, so pairing
 works exactly as with discovered peers. Pair before messaging, as usual.
 Warning: on client-isolating APs direct IP is filtered too — see above.
 
+## After a restart
+
+Your instance id (`~/.config/opencode/hub-id.json`) and the address each paired
+peer was last seen at (`hub-peers.json`) both survive restarts, so starting the
+hub again re-probes your paired peers and reconnects without a new pairing code —
+also on networks where mDNS and beacons are filtered. If a peer moved (DHCP) or
+took a new port, discovery has to find it again, otherwise `hub_add` it.
+
 ## Permissions (your opencode config)
 
 - `allow`: `hub_peers`, `hub_inbox` (read-only, no side effects).

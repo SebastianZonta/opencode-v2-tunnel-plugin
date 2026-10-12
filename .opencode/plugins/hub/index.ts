@@ -1,15 +1,13 @@
 import { Plugin } from "@opencode/plugin";
-import {
-  BASE_PORT,
-  createId,
-  HubCore,
-  isNotice,
-} from "../../../src/hub";
+import { BASE_PORT, HubCore, isNotice } from "../../../src/hub";
+import { loadHubId } from "../../../src/identity";
 import { HubRpc } from "../../../src/hub-rpc";
 
 // One hub per opencode process. This file stays a thin adapter over HubCore
 // (tested in src/): tool/input/output shaping only, no messaging logic.
-const hub = new HubCore(createId(), "hub");
+// The id is persisted: pairing memory is keyed on it, so it cannot be
+// per-process or every restart looks like a changed peer (spec section 4).
+const hub = new HubCore(loadHubId(), "hub");
 
 const displayName = (id: string): string =>
   id === hub.id
