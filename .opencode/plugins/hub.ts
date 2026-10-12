@@ -156,6 +156,30 @@ export const HubPlugin: Plugin = async (input) => {
             : `${args.peer} was not paired`;
         },
       }),
+
+      hub_add: tool({
+        description:
+          "Manual peer entry (mDNS/UDP fallback): probe ip:port and add the hub found there. Last resort for filtered networks; on client-isolating APs direct IP may be blocked too.",
+        args: {
+          target: tool.schema.string(),
+        },
+        async execute(args) {
+          try {
+            const i = args.target.lastIndexOf(":");
+            if (i < 0) throw new Error('hub: use "ip:port"');
+            const peer = await hub.addPeerFromAddress(
+              args.target.slice(0, i),
+              Number(args.target.slice(i + 1)),
+            );
+            return (
+              `added ${peer.name} (${peer.id}) — pair before messaging; ` +
+              `note: client-isolating APs may still block direct IP`
+            );
+          } catch (e) {
+            return e instanceof Error ? e.message : String(e);
+          }
+        },
+      }),
     },
   };
 };

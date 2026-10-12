@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import Bonjour from "bonjour-service";
+import { Beacon } from "./beacon";
 import { PeerRegistry, type PeerAnnouncement, type PeerInfo } from "./peers";
 
 export const MAX_TEXT_BYTES = 64 * 1024;
@@ -35,6 +36,12 @@ export interface HubOptions {
   now?: () => number;
   // Local expiry for unanswered requests; default 60 s. Tests inject less.
   requestTimeoutMs?: number;
+  // UDP-beacon fallback (ticket 05): heartbeat interval, target host,
+  // and rendezvous port. Defaults broadcast every 3 s on 41837; tests use
+  // loopback + custom ports + short intervals.
+  beaconIntervalMs?: number;
+  beaconTarget?: string;
+  beaconPort?: number;
   // Fired for each queued incoming message; the adapter wires it to
   // client.tui.showToast (ticket 04 arrival UX).
   onMessage?: (m: Envelope) => void;
@@ -114,6 +121,7 @@ export class HubCore {
   private received: Array<Envelope | Notice> = [];
   private bonjour: Bonjour | null = null;
   private browser: Bonjour.Browser | null = null;
+  private beacon: Beacon | null = null;
   private registry: PeerRegistry;
   private paired = new Map<string, PairedPeer>();
   private pendingCodes = new Map<string, number>(); // code -> issuedAt ms
@@ -122,6 +130,9 @@ export class HubCore {
   private readonly peersPath: string;
   private readonly now: () => number;
   private readonly requestTimeoutMs: number;
+  private readonly beaconIntervalMs?: number;
+  private readonly beaconTarget?: string;
+  private readonly beaconPort?: number;
   onMessage: ((m: Envelope) => void) | null = null;
   advertisedName = "";
   port = 0;
@@ -135,6 +146,9 @@ export class HubCore {
     this.peersPath = opts.peersPath ?? defaultPeersPath();
     this.now = opts.now ?? Date.now;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 60_000;
+    this.beaconIntervalMs = opts.beaconIntervalMs;
+    this.beaconTarget = opts.beaconTarget;
+    this.beaconPort = opts.beaconPort;
     this.onMessage = opts.onMessage ?? null;
     this.loadPeers();
   }
@@ -175,6 +189,8 @@ export class HubCore {
       );
     this.browser?.stop();
     this.browser = null;
+    await this.beacon?.stop();
+    this.beacon = null;
     if (this.bonjour) {
       // Await the callback: goodbye (TTL 0) must flush before destroy()
       // closes the socket, or peers never see our `down`.
@@ -200,9 +216,48 @@ export class HubCore {
     return peerId === this.id || this.paired.has(peerId);
   }
 
-  // Manual presence entry (ticket 05's `hub add` will reuse this seam).
+  // Manual presence entry: direct upsert for already-known identity.
   addPeer(a: PeerAnnouncement): void {
     this.registry.upsert(a);
+  }
+
+  // Last-resort manual entry (`hub add <ip:port>`): probe the address for
+  // its identity first, so pairing (keyed on peer id) still works.
+  // Warns apply at the tool layer: client-isolating APs may filter even
+  // direct IP, so this can fail on dead-end networks.
+  async addPeerFromAddress(host: string, port: number): Promise<Peer> {
+    if (!Number.isInteger(port) || port < 1 || port > 65535)
+      throw new Error(`hub: bad port "${port}" — use ip:port`);
+    const clean = host.replace(/^\[(.*)\]$/, "$1");
+    const dst = clean.includes(":") ? `[${clean}]` : clean;
+    let info: unknown;
+    try {
+      const res = await fetch(`http://${dst}:${port}/v1/info`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) throw new Error(`answered ${res.status}`);
+      info = await res.json();
+    } catch (e) {
+      throw new Error(
+        `hub: cannot reach ${host}:${port} — ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    const rec = info as Record<string, unknown>;
+    if (
+      typeof rec?.id !== "string" ||
+      typeof rec?.name !== "string" ||
+      rec?.v !== PROTO_VERSION
+    )
+      throw new Error(`hub: ${host}:${port} is not a hub (bad /v1/info)`);
+    this.registry.upsert({
+      id: rec.id,
+      name: rec.name,
+      port,
+      addresses: [clean],
+    });
+    const found = this.peers().find((p) => p.id === rec.id);
+    if (!found) throw new Error("hub: manual entry vanished");
+    return found;
   }
 
   // Number (1-based into peers()) or exact display name. Ambiguous names
@@ -380,6 +435,25 @@ export class HubCore {
     this.bonjour = new Bonjour();
     await this.publish();
     this.browse();
+    // UDP fallback runs alongside mDNS: same registry keyed on id, so a
+    // peer seen both ways holds one entry. Where mDNS is filtered, beacons
+    // are the only source; where it works, they are harmless duplicates.
+    const beacon = new Beacon(
+      () => ({ v: PROTO_VERSION, id: this.id, name: this.name, port: this.port }),
+      (p) => {
+        if (p.v !== PROTO_VERSION || p.id === this.id) return;
+        this.registry.upsert({
+          id: p.id,
+          name: p.name,
+          port: p.port,
+          addresses: p.addresses,
+          ttlMs: beacon.ttlMs,
+        });
+      },
+      { intervalMs: this.beaconIntervalMs, target: this.beaconTarget, port: this.beaconPort },
+    );
+    this.beacon = beacon;
+    await beacon.start();
   }
 
   // The lib refuses conflicting names instead of renaming (RFC 6762 §9),
@@ -434,6 +508,12 @@ export class HubCore {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse) {
+    // Identity probe for manual entry (`hub add`). Public by design:
+    // pairing gates messages, not identity.
+    if (req.method === "GET" && req.url === "/v1/info") {
+      json(res, 200, { v: PROTO_VERSION, id: this.id, name: this.name });
+      return;
+    }
     if (req.method !== "POST" || req.url !== "/v1/messages") {
       res.writeHead(404).end();
       return;

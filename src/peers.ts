@@ -4,6 +4,9 @@ export interface PeerInfo {
   port: number;
   addresses: string[];
   lastSeen: number;
+  // Per-source expiry: beacon heartbeats set ~3× their interval;
+  // null means the registry default (mDNS entries).
+  ttlMs: number | null;
 }
 
 export interface PeerAnnouncement {
@@ -12,11 +15,12 @@ export interface PeerAnnouncement {
   port: number;
   addresses?: string[];
   lastSeen?: number;
+  ttlMs?: number;
 }
 
 // Presence keyed on TXT id, never the display name. Shared by mDNS
-// up/down events (ticket 02) and UDP-beacon heartbeats (ticket 05);
-// the sweep is the backstop for peers that vanish without goodbye.
+// up/down events and UDP-beacon heartbeats; the sweep is the backstop
+// for peers that vanish without goodbye.
 export class PeerRegistry {
   private peers = new Map<string, PeerInfo>();
 
@@ -29,6 +33,7 @@ export class PeerRegistry {
       port: a.port,
       addresses: a.addresses ?? [],
       lastSeen: a.lastSeen ?? Date.now(),
+      ttlMs: a.ttlMs ?? null,
     });
   }
 
@@ -43,7 +48,7 @@ export class PeerRegistry {
   list(now = Date.now()): PeerInfo[] {
     const out: PeerInfo[] = [];
     for (const [id, p] of this.peers) {
-      if (now - p.lastSeen > this.timeoutMs) this.peers.delete(id);
+      if (now - p.lastSeen > (p.ttlMs ?? this.timeoutMs)) this.peers.delete(id);
       else out.push({ ...p });
     }
     return out;
