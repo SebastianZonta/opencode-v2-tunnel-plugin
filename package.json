@@ -1,0 +1,16 @@
+{
+  "name": "lan-hub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.19.0"
+  },
+  "devDependencies": {
+    "bun-types": "^1.4.3",
+    "typescript": "^5"
+  }
+}
