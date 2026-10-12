@@ -4,8 +4,8 @@ import {
   createId,
   HubCore,
   isNotice,
-} from "../../src/hub";
-import { HubRpc } from "../../src/hub-rpc";
+} from "../../../src/hub";
+import { HubRpc } from "../../../src/hub-rpc";
 
 // One hub per opencode process. This file stays a thin adapter over HubCore
 // (tested in src/): tool/input/output shaping only, no messaging logic.

@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui";
-import { HubRpc } from "../../src/hub-rpc";
+import { HubRpc } from "../../../src/hub-rpc";
 
 // CLI-side companion to the hub server plugin: turns arrival RPC events
 // into TUI toasts. Poll hub_inbox for the messages themselves.

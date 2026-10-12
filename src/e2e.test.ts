@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { HubCore, isNotice, type Envelope } from "./hub";
-import HubPlugin from "../.opencode/plugins/hub";
+import HubPlugin from "../.opencode/plugins/hub/index";
 
 // The adapter's hub uses the real TOFU path (no injection seam, by design:
 // ticket 03 dropped the env fallback as unspecced). Tests that drive it
