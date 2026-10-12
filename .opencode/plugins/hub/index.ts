@@ -170,10 +170,13 @@ export default Plugin.define({
               content: `pairing code for ${args.peer}: ${code} (single-use, 5 min)`,
             };
           }
+          // TOFU is keyed on the peer's real uuid, never the number/name the
+          // human typed, or isPaired() never matches and sends stay 403.
+          const target = hub.resolvePeer(args.peer);
           const peer = hub.redeemPairingCode(
             args.code,
-            args.peer,
-            args.name ?? args.peer,
+            target.id,
+            args.name ?? target.name,
           );
           return { content: `paired with ${peer.name} (${peer.id})` };
         },

@@ -260,10 +260,12 @@ export class HubCore {
     return found;
   }
 
-  // Number (1-based into peers()) or exact display name. Ambiguous names
-  // throw — never guessed (spec section 5).
+  // Number (1-based into peers()), exact display name, or instance id.
+  // Ambiguous names throw — never guessed (spec section 5).
   resolvePeer(ref: string): Peer {
     const list = this.peers();
+    const byId = list.find((p) => p.id === ref);
+    if (byId) return byId;
     if (/^\d+$/.test(ref)) {
       const peer = list[Number(ref) - 1];
       if (!peer) throw new Error(`hub: no peer #${ref}`);
