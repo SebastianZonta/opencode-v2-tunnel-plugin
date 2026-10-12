@@ -1,8 +1,8 @@
 import { type Plugin, tool } from "@opencode-ai/plugin";
 import { BASE_PORT, createId, HubCore } from "../../src/hub";
 
-// One hub per opencode process. Pairing, discovery, and replies arrive in
-// tickets 02-04; this file stays a thin adapter over HubCore (tested in src/).
+// One hub per opencode process. Replies arrive in ticket 04;
+// this file stays a thin adapter over HubCore (tested in src/).
 const hub = new HubCore(createId(), "hub");
 
 export const HubPlugin: Plugin = async () => {
@@ -76,6 +76,40 @@ export const HubPlugin: Plugin = async () => {
                 `last-seen:${Math.round((Date.now() - p.lastSeen) / 1000)}s ago`,
             )
             .join("\n");
+        },
+      }),
+
+      hub_pair: tool({
+        description:
+          "Pairing: no code issues a 6-digit single-use 5-minute code for a peer; with code redeems it and trusts the peer.",
+        args: {
+          peer: tool.schema.string(),
+          name: tool.schema.string().optional(),
+          code: tool.schema.string().optional(),
+        },
+        async execute(args) {
+          if (args.code === undefined) {
+            const code = hub.issuePairingCode();
+            return `pairing code for ${args.peer}: ${code} (single-use, 5 min)`;
+          }
+          const peer = hub.redeemPairingCode(
+            args.code,
+            args.peer,
+            args.name ?? args.peer,
+          );
+          return `paired with ${peer.name} (${peer.id})`;
+        },
+      }),
+
+      hub_unpair: tool({
+        description: "Forget a paired peer; their messages will be rejected.",
+        args: {
+          peer: tool.schema.string(),
+        },
+        async execute(args) {
+          return hub.unpair(args.peer)
+            ? `unpaired ${args.peer}`
+            : `${args.peer} was not paired`;
         },
       }),
     },

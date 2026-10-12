@@ -4,7 +4,10 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import Bonjour from "bonjour-service";
 import { PeerRegistry, type PeerInfo } from "./peers";
 
@@ -15,6 +18,22 @@ export const SERVICE_TYPE = "opencode-hub";
 export const PROTO_VERSION = "1";
 const PUBLISH_WAIT_MS = 5_000;
 const MAX_NAME_TRIES = 10;
+// Spec section 4: 6-digit, 5-minute, single-use pairing codes.
+export const PAIRING_CODE_TTL_MS = 5 * 60 * 1000;
+
+export interface PairedPeer {
+  id: string;
+  name: string;
+  pairedAt: string; // ISO-8601
+}
+
+export interface HubOptions {
+  peerTimeoutMs?: number;
+  // TOFU store location; defaults to ~/.config/opencode/hub-peers.json.
+  // Tests pass a temp file.
+  peersPath?: string;
+  now?: () => number;
+}
 
 export interface Envelope {
   id: string;
@@ -73,15 +92,22 @@ export class HubCore {
   private bonjour: Bonjour | null = null;
   private browser: Bonjour.Browser | null = null;
   private registry: PeerRegistry;
+  private paired = new Map<string, PairedPeer>();
+  private pendingCodes = new Map<string, number>(); // code -> issuedAt ms
+  private readonly peersPath: string;
+  private readonly now: () => number;
   advertisedName = "";
   port = 0;
 
   constructor(
     readonly id: string,
     readonly name: string,
-    opts: { peerTimeoutMs?: number } = {},
+    opts: HubOptions = {},
   ) {
     this.registry = new PeerRegistry(opts.peerTimeoutMs);
+    this.peersPath = opts.peersPath ?? defaultPeersPath();
+    this.now = opts.now ?? Date.now;
+    this.loadPeers();
   }
 
   async start(port = BASE_PORT): Promise<number> {
@@ -137,8 +163,83 @@ export class HubCore {
   }
 
   peers(): Peer[] {
-    // shortcut: paired is hardwired false; ticket 03 owns the TOFU lookup.
-    return this.registry.list().map((p) => ({ ...p, paired: false }));
+    return this.registry.list().map((p) => ({ ...p, paired: this.paired.has(p.id) }));
+  }
+
+  isPaired(peerId: string): boolean {
+    return peerId === this.id || this.paired.has(peerId);
+  }
+
+  issuePairingCode(): string {
+    let code: string;
+    do {
+      code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+    } while (this.pendingCodes.has(code));
+    this.pendingCodes.set(code, this.now());
+    return code;
+  }
+
+  redeemPairingCode(code: string, peerId: string, peerName: string): PairedPeer {
+    const issuedAt = this.pendingCodes.get(code);
+    this.pendingCodes.delete(code); // single-use: consumed whether valid or not
+    if (issuedAt === undefined) throw new Error("hub: unknown pairing code");
+    if (this.now() - issuedAt > PAIRING_CODE_TTL_MS)
+      throw new Error("hub: pairing code expired");
+    const peer: PairedPeer = {
+      id: peerId,
+      name: peerName,
+      pairedAt: new Date(this.now()).toISOString(),
+    };
+    this.paired.set(peerId, peer);
+    this.savePeers();
+    return peer;
+  }
+
+  unpair(peerId: string): boolean {
+    const removed = this.paired.delete(peerId);
+    if (removed) this.savePeers();
+    return removed;
+  }
+
+  private loadPeers(): void {
+    let raw: string;
+    try {
+      raw = readFileSync(this.peersPath, "utf8");
+    } catch {
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      for (const p of parsed) {
+        if (
+          typeof p === "object" &&
+          p !== null &&
+          typeof (p as Record<string, unknown>).id === "string" &&
+          typeof (p as Record<string, unknown>).name === "string"
+        ) {
+          const rec = p as Record<string, unknown>;
+          this.paired.set(rec.id as string, {
+            id: rec.id as string,
+            name: rec.name as string,
+            pairedAt:
+              typeof rec.pairedAt === "string"
+                ? rec.pairedAt
+                : new Date(0).toISOString(),
+          });
+        }
+      }
+    } catch {
+      // Corrupt store reads as empty; next pair overwrites it.
+    }
+  }
+
+  private savePeers(): void {
+    mkdirSync(dirname(this.peersPath), { recursive: true });
+    writeFileSync(
+      this.peersPath,
+      JSON.stringify([...this.paired.values()], null, 2),
+    );
   }
 
   async send(
@@ -231,7 +332,16 @@ export class HubCore {
       json(res, 200, { status: "dropped" });
       return;
     }
+    // Trust before content (spec section 4; v1 is plaintext-on-LAN gated by
+    // pairing only). Loopback from self needs no pairing.
+    if (!this.isPaired(v.from)) {
+      json(res, 403, { status: "forbidden" });
+      return;
+    }
     this.received.push(v);
     json(res, 200, { status: "queued" });
   }
 }
+
+const defaultPeersPath = () =>
+  join(homedir(), ".config", "opencode", "hub-peers.json");
