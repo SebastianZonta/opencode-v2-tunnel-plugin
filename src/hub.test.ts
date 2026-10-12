@@ -120,3 +120,69 @@ describe("send loopback", () => {
     expect(hub.inbox()).toHaveLength(1);
   });
 });
+
+describe("LAN discovery", () => {
+  const waitFor = async (
+    cond: () => boolean,
+    what: string,
+    timeoutMs = 10_000,
+  ) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!cond()) {
+      if (Date.now() > deadline) throw new Error(`timed out: ${what}`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  };
+
+  test("two instances discover each other, port learned from SRV", async () => {
+    const a = new HubCore("disc-a", "hub-a");
+    const b = new HubCore("disc-b", "hub-b");
+    hubs.push(a, b);
+    await a.start(41751);
+    await b.start(41752);
+    await waitFor(
+      () =>
+        a.peers().some((p) => p.id === "disc-b" && p.port === b.port) &&
+        b.peers().some((p) => p.id === "disc-a" && p.port === a.port),
+      "mutual discovery",
+    );
+    expect(a.peers().find((p) => p.id === "disc-b")).toMatchObject({
+      name: "hub-b",
+      port: b.port,
+    });
+    // Self is presence for others, never a peer of itself.
+    expect(a.peers().some((p) => p.id === "disc-a")).toBe(false);
+  }, 20_000);
+
+  test("name conflicts auto-rename, identity stays on TXT id", async () => {
+    const a = new HubCore("conf-a", "hub-same");
+    const b = new HubCore("conf-b", "hub-same");
+    hubs.push(a, b);
+    await a.start(41753);
+    await b.start(41754);
+    await waitFor(
+      () =>
+        a.peers().some((p) => p.id === "conf-b") &&
+        b.peers().some((p) => p.id === "conf-a"),
+      "discovery despite name conflict",
+    );
+  }, 20_000);
+
+  test("stopped publisher disappears via goodbye", async () => {
+    const a = new HubCore("bye-a", "hub-bye-a");
+    const b = new HubCore("bye-b", "hub-bye-b");
+    hubs.push(a, b);
+    await a.start(41755);
+    await b.start(41756);
+    await waitFor(
+      () => a.peers().some((p) => p.id === "bye-b"),
+      "initial discovery",
+    );
+    await b.stop();
+    hubs.splice(hubs.indexOf(b), 1);
+    await waitFor(
+      () => !a.peers().some((p) => p.id === "bye-b"),
+      "peer gone after goodbye",
+    );
+  }, 20_000);
+});

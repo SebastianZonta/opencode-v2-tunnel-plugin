@@ -5,9 +5,16 @@ import {
   type ServerResponse,
 } from "node:http";
 import { randomUUID } from "node:crypto";
+import Bonjour from "bonjour-service";
+import { PeerRegistry, type PeerInfo } from "./peers";
 
 export const MAX_TEXT_BYTES = 64 * 1024;
 export const BASE_PORT = 41737;
+// Bare name: the lib renders the wire type _opencode-hub._tcp.local (spec §2).
+export const SERVICE_TYPE = "opencode-hub";
+export const PROTO_VERSION = "1";
+const PUBLISH_WAIT_MS = 5_000;
+const MAX_NAME_TRIES = 10;
 
 export interface Envelope {
   id: string;
@@ -56,15 +63,26 @@ const readBody = (req: IncomingMessage) =>
     req.on("error", reject);
   });
 
+export interface Peer extends PeerInfo {
+  paired: boolean;
+}
+
 export class HubCore {
   private server: Server | null = null;
   private received: Envelope[] = [];
+  private bonjour: Bonjour | null = null;
+  private browser: Bonjour.Browser | null = null;
+  private registry: PeerRegistry;
+  advertisedName = "";
   port = 0;
 
   constructor(
     readonly id: string,
     readonly name: string,
-  ) {}
+    opts: { peerTimeoutMs?: number } = {},
+  ) {
+    this.registry = new PeerRegistry(opts.peerTimeoutMs);
+  }
 
   async start(port = BASE_PORT): Promise<number> {
     if (this.server) return this.port;
@@ -85,6 +103,7 @@ export class HubCore {
       if (bound) {
         this.server = server;
         this.port = p;
+        await this.startDiscovery();
         return p;
       }
     }
@@ -99,14 +118,27 @@ export class HubCore {
       await new Promise<void>((resolve, reject) =>
         s.close((e) => (e ? reject(e) : resolve())),
       );
+    this.browser?.stop();
+    this.browser = null;
+    if (this.bonjour) {
+      // Await the callback: goodbye (TTL 0) must flush before destroy()
+      // closes the socket, or peers never see our `down`.
+      const bj = this.bonjour;
+      await new Promise<void>((resolve) => bj.unpublishAll(() => resolve()));
+      bj.destroy();
+      this.bonjour = null;
+    }
+    this.advertisedName = "";
+    this.registry.clear();
   }
 
   inbox(): Envelope[] {
     return [...this.received];
   }
 
-  peers(): Array<{ id: string; name: string }> {
-    return [];
+  peers(): Peer[] {
+    // shortcut: paired is hardwired false; ticket 03 owns the TOFU lookup.
+    return this.registry.list().map((p) => ({ ...p, paired: false }));
   }
 
   async send(
@@ -120,6 +152,63 @@ export class HubCore {
       signal: AbortSignal.timeout(10_000),
     });
     return (await res.json()) as { status: string };
+  }
+
+  private async startDiscovery(): Promise<void> {
+    this.bonjour = new Bonjour();
+    await this.publish();
+    this.browse();
+  }
+
+  // The lib refuses conflicting names instead of renaming (RFC 6762 §9),
+  // so retry with a suffix until our probe finds the name free.
+  private async publish(): Promise<void> {
+    const bj = this.bonjour;
+    if (!bj) return;
+    for (let n = 1; n <= MAX_NAME_TRIES; n++) {
+      const attempt = n === 1 ? this.name : `${this.name} (${n})`;
+      const svc = bj.publish({
+        name: attempt,
+        type: SERVICE_TYPE,
+        port: this.port,
+        txt: { id: this.id, name: this.name, v: PROTO_VERSION },
+      });
+      const up = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), PUBLISH_WAIT_MS);
+        timer.unref?.();
+        svc.once("up", () => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+      if (up) {
+        this.advertisedName = attempt;
+        return;
+      }
+      svc.stop();
+    }
+    throw new Error("hub: mDNS name conflict would not resolve");
+  }
+
+  private browse(): void {
+    if (!this.bonjour) return;
+    const browser = this.bonjour.find({ type: SERVICE_TYPE });
+    this.browser = browser;
+    browser.on("up", (svc) => {
+      const id = svc.txt?.id;
+      if (typeof id !== "string" || id === this.id) return;
+      const name = typeof svc.txt?.name === "string" ? svc.txt.name : svc.name;
+      this.registry.upsert({
+        id,
+        name,
+        port: svc.port,
+        addresses: svc.addresses ?? [],
+      });
+    });
+    browser.on("down", (svc) => {
+      const id = svc.txt?.id;
+      if (typeof id === "string" && id !== this.id) this.registry.remove(id);
+    });
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse) {

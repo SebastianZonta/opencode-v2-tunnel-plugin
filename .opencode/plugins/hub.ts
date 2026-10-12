@@ -63,10 +63,19 @@ export const HubPlugin: Plugin = async () => {
       }),
 
       hub_peers: tool({
-        description: "List discovered LAN peers (ticket 01: always empty).",
+        description: "List discovered LAN peers: name, paired?, last seen.",
         args: {},
         async execute() {
-          return "(no peers discovered yet)";
+          const peers = hub.peers();
+          if (peers.length === 0) return "(no peers discovered yet)";
+          return peers
+            .map(
+              (p, i) =>
+                `${i + 1}. ${p.name} (${p.id.slice(0, 8)}) ` +
+                `paired:${p.paired ? "yes" : "no"} ` +
+                `last-seen:${Math.round((Date.now() - p.lastSeen) / 1000)}s ago`,
+            )
+            .join("\n");
         },
       }),
     },
