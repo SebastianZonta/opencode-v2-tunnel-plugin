@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 (LAN discovery between two instances).
 
-**Status:** ready-for-agent
+**Status:** done (cc28284; 39/39 tests, tsc clean, adapter smoke-tested)
 
 - [ ] UDP-broadcast beacons (stdlib only, same payload fields, 2–5 s heartbeat, ~3× expiry) kick in where mDNS fails
 - [ ] `hub add <ip:port>` manual entry as last resort, with client-isolation warning
