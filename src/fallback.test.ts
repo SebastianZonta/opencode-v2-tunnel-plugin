@@ -203,3 +203,43 @@ describe("restart reconnect", () => {
     expect(peer?.port).toBe(portB);
   });
 });
+
+// Filtered network: mDNS and beacons both gone. reconnect() runs once at
+// start, so without a background refresh the paired peer expires out of
+// presence (~TTL) and never comes back.
+describe("filtered-network refresh", () => {
+  test("paired peer stays present with no discovery traffic", async () => {
+    const b = trackHub(new HubCore("fb", "FB", { peersPath: tmpPeers() }));
+    const portB = await b.start(41795);
+    // Custom beacon port: hears nothing. The one-shot mDNS entry expires
+    // with the 300 ms registry timeout; only the refresh keeps it alive.
+    const a = trackHub(
+      new HubCore("fa", "FA", {
+        peersPath: tmpPeers(),
+        peerTimeoutMs: 300,
+        reconnectIntervalMs: 100,
+        beaconPort: 41957,
+      }),
+    );
+    await a.start(41796);
+    await a.addPeerFromAddress("127.0.0.1", portB);
+    a.redeemPairingCode(a.issuePairingCode(), "fb", "FB");
+    await new Promise((r) => setTimeout(r, 900));
+    const peer = a.peers().find((p) => p.id === "fb");
+    expect(peer?.paired).toBe(true);
+    expect(Date.now() - (peer?.lastSeen ?? 0)).toBeLessThan(300);
+  });
+
+  test("without refresh the entry expires (never-started control)", async () => {
+    const b = trackHub(new HubCore("fb", "FB", { peersPath: tmpPeers() }));
+    const portB = await b.start(41797);
+    // Never started: no timer armed, no discovery at all.
+    const a = trackHub(
+      new HubCore("fa", "FA", { peersPath: tmpPeers(), peerTimeoutMs: 300 }),
+    );
+    await a.addPeerFromAddress("127.0.0.1", portB);
+    a.redeemPairingCode(a.issuePairingCode(), "fb", "FB");
+    await new Promise((r) => setTimeout(r, 700));
+    expect(a.peers().find((p) => p.id === "fb")).toBeUndefined();
+  });
+});

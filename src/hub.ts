@@ -46,6 +46,11 @@ export interface HubOptions {
   beaconIntervalMs?: number;
   beaconTarget?: string;
   beaconPort?: number;
+  // Filtered-network refresh: how often remembered paired addresses are
+  // re-probed while started. Default 15 s — under the 30 s presence TTL,
+  // so paired peers stay listed where mDNS and beacons are both filtered.
+  // Tests inject less.
+  reconnectIntervalMs?: number;
   // Fired for each queued incoming message; the adapter wires it to
   // client.tui.showToast (ticket 04 arrival UX).
   onMessage?: (m: Envelope) => void;
@@ -137,6 +142,8 @@ export class HubCore {
   private readonly beaconIntervalMs?: number;
   private readonly beaconTarget?: string;
   private readonly beaconPort?: number;
+  private readonly reconnectIntervalMs: number;
+  private reconnectTimer: ReturnType<typeof setInterval> | null = null;
   onMessage: ((m: Envelope) => void) | null = null;
   advertisedName = "";
   port = 0;
@@ -153,6 +160,7 @@ export class HubCore {
     this.beaconIntervalMs = opts.beaconIntervalMs;
     this.beaconTarget = opts.beaconTarget;
     this.beaconPort = opts.beaconPort;
+    this.reconnectIntervalMs = opts.reconnectIntervalMs ?? 15_000;
     this.onMessage = opts.onMessage ?? null;
     this.loadPeers();
   }
@@ -180,6 +188,13 @@ export class HubCore {
         // Not awaited: a dead peer's probe timeout must not delay the
         // listener becoming visible.
         void this.reconnect().catch(() => {});
+        // Filtered nets kill mDNS and beacons while presence expires, so
+        // re-probe remembered addresses in the background — or paired peers
+        // vanish ~30 s after start and never come back.
+        this.reconnectTimer = setInterval(() => {
+          void this.reconnect().catch(() => {});
+        }, this.reconnectIntervalMs);
+        this.reconnectTimer.unref?.();
         return p;
       }
     }
@@ -190,6 +205,10 @@ export class HubCore {
     const s = this.server;
     this.server = null;
     this.port = 0;
+    if (this.reconnectTimer) {
+      clearInterval(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (s)
       await new Promise<void>((resolve, reject) =>
         s.close((e) => (e ? reject(e) : resolve())),
