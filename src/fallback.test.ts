@@ -97,6 +97,35 @@ describe("beacon transport (loopback)", () => {
     expect(b.isListening).toBe(false);
     await waitFor(() => heard.some((p) => p.id === "b"));
   });
+
+  test("unicast targets reach a peer that broadcast never touches", async () => {
+    const heard: BeaconPayload[] = [];
+    // A's broadcast twin goes to itself only; B learns A solely through
+    // the unicast target — the filtered-network path.
+    const a = trackBeacon(
+      new Beacon(
+        () => ({ v: "1", id: "a", name: "A", port: 1111 }),
+        () => {},
+        {
+          port: 41958,
+          target: "127.0.0.1",
+          targetPort: 41958,
+          intervalMs: 50,
+          unicastTargets: () => [{ host: "127.0.0.1", port: 41959 }],
+        },
+      ),
+    );
+    const b = trackBeacon(
+      new Beacon(
+        () => ({ v: "1", id: "b", name: "B", port: 2222 }),
+        (p) => heard.push(p),
+        { port: 41959, intervalMs: 50 },
+      ),
+    );
+    await a.start();
+    await b.start();
+    await waitFor(() => heard.some((p) => p.id === "a" && p.port === 1111));
+  });
 });
 
 describe("registry beacon expiry", () => {

@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import Bonjour from "bonjour-service";
-import { Beacon } from "./beacon";
+import { Beacon, BEACON_PORT } from "./beacon";
 import { PeerRegistry, type PeerAnnouncement, type PeerInfo } from "./peers";
 
 export const MAX_TEXT_BYTES = 64 * 1024;
@@ -519,7 +519,15 @@ export class HubCore {
           ttlMs: beacon.ttlMs,
         });
       },
-      { intervalMs: this.beaconIntervalMs, target: this.beaconTarget, port: this.beaconPort },
+      { intervalMs: this.beaconIntervalMs, target: this.beaconTarget, port: this.beaconPort,
+        // Remembered paired addresses get every heartbeat by unicast too:
+        // that is what the other side hears on networks where mDNS and
+        // broadcast never arrive. Re-read per beat so it tracks pairing.
+        unicastTargets: () =>
+          [...this.paired.values()].flatMap((p) =>
+            (p.addresses ?? []).map((host) => ({ host, port: BEACON_PORT })),
+          ),
+      },
     );
     this.beacon = beacon;
     await beacon.start();

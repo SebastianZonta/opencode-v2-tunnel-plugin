@@ -63,6 +63,12 @@ export class Beacon {
       target?: string;
       targetPort?: number;
       intervalMs?: number;
+      // Filtered-network path: unicast heartbeat targets, re-read every
+      // beat so pairing/unpairing takes effect without restarting the
+      // beacon. Multicast/broadcast often die between WiFi clients while
+      // unicast sails through — this is what keeps paired peers present
+      // where mDNS never arrives.
+      unicastTargets?: () => Array<{ host: string; port: number }>;
     } = {},
   ) {}
 
@@ -135,6 +141,13 @@ export class Beacon {
       this.opts.target ?? "255.255.255.255",
       () => {},
     );
+    // Unicast twin of the broadcast above: same payload, direct to each
+    // remembered peer. Best-effort like everything else here.
+    // shortcut: assumes the peer's default beacon port (41837); a peer on
+    // a custom beaconPort only hears the broadcast twin.
+    for (const t of this.opts.unicastTargets?.() ?? []) {
+      sock.send(Buffer.from(JSON.stringify(payload)), t.port, t.host, () => {});
+    }
   }
 
   private handle(msg: Buffer): void {
