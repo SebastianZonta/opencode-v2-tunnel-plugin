@@ -20,7 +20,7 @@ export default Plugin.define({
       void context.client.session
         .prompt({
           sessionID: route.sessionID,
-          text: `[hub] incoming message from ${data.name}: ${data.text} — find it in hub_inbox and answer with hub_reply <n> <text>.`,
+          text: `[hub from ${data.name}] ${data.text}`,
         })
         .catch(() => {});
     });

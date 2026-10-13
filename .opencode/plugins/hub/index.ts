@@ -24,7 +24,7 @@ export default Plugin.define({
       const name =
         hub.peers().find((p) => p.id === m.from)?.name ?? "unknown peer";
       void rpc.events
-        .emit("message", { from: m.from, name, text: m.text.slice(0, 200) })
+        .emit("message", { from: m.from, name, text: m.text })
         .catch(() => {});
     };
 
