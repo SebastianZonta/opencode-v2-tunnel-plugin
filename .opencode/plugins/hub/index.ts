@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { Plugin } from "@opencode/plugin";
 import { BASE_PORT, HubCore, isNotice } from "../../../src/hub";
 import { loadHubId } from "../../../src/identity";
@@ -7,7 +8,9 @@ import { HubRpc } from "../../../src/hub-rpc";
 // (tested in src/): tool/input/output shaping only, no messaging logic.
 // The id is persisted: pairing memory is keyed on it, so it cannot be
 // per-process or every restart looks like a changed peer (spec section 4).
-const hub = new HubCore(loadHubId(), "hub");
+// The name is the OS hostname so the two paired PCs disambiguate in
+// hub_peers and "[hub from <name>]" arrival prompts.
+const hub = new HubCore(loadHubId(), hostname() || "hub");
 
 const displayName = (id: string): string =>
   id === hub.id
@@ -18,6 +21,15 @@ export default Plugin.define({
   id: "hub",
   async setup(ctx) {
     const rpc = await ctx.rpc.register(HubRpc, {});
+    // Dual-PC pointer: full peer-chat protocol lives in docs/hub-chat.md
+    // and loads only when a peer loop starts. Guarded: e2e stubs omit
+    // ctx.session, and setup must not throw there.
+    await ctx.session?.hook?.("context", (input) => {
+      input.system.push({
+        type: "text",
+        text: "Dual-PC hub: on \"chat with the paired PC\" or `[hub from <name>]`, read docs/hub-chat.md and follow it.",
+      });
+    });
     // Arrival: emit a live-only RPC event for the CLI companion's toast.
     // Fire-and-forget: a failed emit must never break receipt.
     hub.onMessage = (m) => {
