@@ -244,7 +244,7 @@ export class HubCore {
 
   // Manual presence entry: direct upsert for already-known identity.
   addPeer(a: PeerAnnouncement): void {
-    this.registry.upsert(a);
+    this.learn(a);
   }
 
   // Last-resort manual entry (`hub add <ip:port>`): probe the address for
@@ -283,11 +283,24 @@ export class HubCore {
 
   // Presence is live-only, so a paired peer's address is kept in the TOFU
   // record too: that is what reconnect() re-probes after a restart.
+  // Auto-trust on discovery (same-LAN trust): any discovered peer is paired
+  // without a code. hub_unpair remains as a manual block override.
   private learn(a: PeerAnnouncement): void {
+    if (a.id === this.id) return;
     this.registry.upsert(a);
     const rec = this.paired.get(a.id);
-    if (!rec) return;
     const addresses = a.addresses ?? [];
+    if (!rec) {
+      this.paired.set(a.id, {
+        id: a.id,
+        name: a.name,
+        pairedAt: new Date(this.now()).toISOString(),
+        port: a.port,
+        addresses,
+      });
+      this.savePeers();
+      return;
+    }
     const key = (list?: string[]) => [...(list ?? [])].sort().join(",");
     const same = rec.port === a.port && key(rec.addresses) === key(addresses);
     if (same) return; // heartbeats every few seconds must not rewrite the file

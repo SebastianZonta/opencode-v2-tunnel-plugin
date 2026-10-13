@@ -78,10 +78,14 @@ describe("send by number-or-name (two hubs over loopback)", () => {
     expect(ans.inReplyTo).toBe((b.inbox()[0] as Envelope).id);
   });
 
-  test("sendToPeer refuses unpaired peers; reply to missing item throws", async () => {
+  test("discovered peers auto-pair; unpair restores the gate", async () => {
     const a = mk("a", "A");
     await a.start(41773);
     a.addPeer({ id: "b", name: "B", port: 41779, addresses: ["127.0.0.1"] });
+    // Auto-trust on discovery: no code needed, but the dead port still fails.
+    expect(a.isPaired("b")).toBe(true);
+    await expect(a.sendToPeer("B", "hi")).rejects.toThrow(/Unable to connect/);
+    a.unpair("b");
     await expect(a.sendToPeer("B", "hi")).rejects.toThrow(/not paired/);
     expect(() => a.reply(1, "hi")).toThrow(/no inbox item #1/);
   });

@@ -220,7 +220,7 @@ export default Plugin.define({
             );
             return {
               content:
-                `added ${peer.name} (${peer.id}) — pair before messaging; ` +
+                `added ${peer.name} (${peer.id}) — auto-paired on discovery; ` +
                 `note: client-isolating APs may still block direct IP`,
             };
           } catch (e) {
