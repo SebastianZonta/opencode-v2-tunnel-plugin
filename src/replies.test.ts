@@ -52,6 +52,20 @@ describe("peer addressing", () => {
       "http://127.0.0.1:1/v1/messages",
     );
   });
+
+  test("peerUrl prefers a peer address on our own subnet", () => {
+    const peer = {
+      port: 41737,
+      addresses: ["26.171.200.136", "192.168.0.190", "172.30.32.1"],
+    };
+    expect(
+      peerUrl(peer, ["192.168.0.196"]),
+    ).toBe("http://192.168.0.190:41737/v1/messages");
+    // No shared subnet: keep legacy first-address order.
+    expect(peerUrl(peer, ["10.9.9.9"])).toBe(
+      "http://26.171.200.136:41737/v1/messages",
+    );
+  });
 });
 
 describe("send by number-or-name (two hubs over loopback)", () => {

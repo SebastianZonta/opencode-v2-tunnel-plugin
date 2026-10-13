@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import Bonjour from "bonjour-service";
-import { Beacon, BEACON_PORT } from "./beacon";
+import { Beacon, BEACON_PORT, lanAddresses } from "./beacon";
 import { PeerRegistry, type PeerAnnouncement, type PeerInfo } from "./peers";
 
 export const MAX_TEXT_BYTES = 64 * 1024;
@@ -641,12 +641,23 @@ export class HubCore {
 }
 
 // Prefer a LAN-reachable IPv4; loopback last, IPv6 bracketed.
-export function peerUrl(peer: { port: number; addresses: string[] }): string {
+// Within IPv4, prefer an address on a subnet we share: multi-homed peers
+// advertise VPN/container addresses first and sends blackhole there.
+// shortcut: same-/24 heuristic, upgrade to netmask-aware match if multi-subnet LANs matter.
+export function peerUrl(
+  peer: { port: number; addresses: string[] },
+  selfAddrs: string[] = lanAddresses(),
+): string {
   const v4 = peer.addresses.filter(
     (a) => a.includes(".") && !a.startsWith("127.") && !a.startsWith("169.254."),
   );
+  const sub24 = (a: string) => a.split(".").slice(0, 3).join(".");
+  const mine = new Set(
+    selfAddrs.filter((a) => a.includes(".")).map(sub24),
+  );
   const addr =
-    v4[0] ?? peer.addresses.find((a) => a !== "::1") ??
+    v4.find((a) => mine.has(sub24(a))) ?? v4[0] ??
+    peer.addresses.find((a) => a !== "::1") ??
     peer.addresses[0] ?? "127.0.0.1";
   const host = addr.includes(":") && !addr.startsWith("[") ? `[${addr}]` : addr;
   return `http://${host}:${peer.port}/v1/messages`;
